@@ -474,10 +474,22 @@ impl<Config: config::Config> XcmExecutor<Config> {
 					Config::AssetTransactor::beam_asset(asset, origin, &dest, &self.context)?;
 				}
 				let reanchor_context = Config::UniversalLocation::get();
+				log::debug!(
+					target: "xcm::process_instruction",
+					"TransferReserveAsset1 -> dest: {:?}, reanchor_context: {:?}", &dest, &reanchor_context
+				);
 				assets.reanchor(&dest, reanchor_context).map_err(|()| XcmError::LocationFull)?;
 				let mut message = vec![ReserveAssetDeposited(assets), ClearOrigin];
 				message.extend(xcm.0.into_iter());
+				log::debug!(
+					target: "xcm::process_instruction",
+					"TransferReserveAsset2 -> dest: {:?}, message: {:?}", &dest, &message
+				);
 				self.send(dest, Xcm(message), FeeReason::TransferReserveAsset)?;
+				log::debug!(
+					target: "xcm::process_instruction",
+					"TransferReserveAsset3 -> Done!",
+				);
 				Ok(())
 			},
 			ReceiveTeleportedAsset(assets) => {
@@ -869,6 +881,10 @@ impl<Config: config::Config> XcmExecutor<Config> {
 			},
 			AliasOrigin(_) => Err(XcmError::NoPermission),
 			UnpaidExecution { check_origin, .. } => {
+				log::debug!(
+					target: "xcm::process_instruction",
+					"UnpaidExecution!",
+				);
 				ensure!(
 					check_origin.is_none() || self.context.origin == check_origin,
 					XcmError::BadOrigin

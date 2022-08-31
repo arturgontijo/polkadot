@@ -1015,6 +1015,7 @@ impl<T: Config> Pallet<T> {
 		let weight =
 			T::Weigher::weight(&mut message).map_err(|()| Error::<T>::UnweighableMessage)?;
 		let hash = message.using_encoded(sp_io::hashing::blake2_256);
+		log::debug!(target: "xcm::do_reserve_transfer_assets", "dest: {:?}, message: {:?}", &dest, &message);
 		let outcome =
 			T::XcmExecutor::execute_xcm_in_credit(origin_location, message, hash, weight, weight);
 		Self::deposit_event(Event::Attempted(outcome));
@@ -1074,6 +1075,7 @@ impl<T: Config> Pallet<T> {
 		let weight =
 			T::Weigher::weight(&mut message).map_err(|()| Error::<T>::UnweighableMessage)?;
 		let hash = message.using_encoded(sp_io::hashing::blake2_256);
+		log::debug!(target: "xcm::do_teleport_assets", "dest: {:?}, message: {:?}", &dest, &message);
 		let outcome =
 			T::XcmExecutor::execute_xcm_in_credit(origin_location, message, hash, weight, weight);
 		Self::deposit_event(Event::Attempted(outcome));
