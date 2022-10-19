@@ -30,7 +30,10 @@ use sp_runtime::{
 	BuildStorage,
 };
 use xcm_builder::{
-	test_utils::{Assets, TestAssetTrap, TestSubscriptionService},
+	test_utils::{
+		Assets, TestAssetExchanger, TestAssetLocker, TestAssetTrap, TestSubscriptionService,
+		TestUniversalAliases,
+	},
 	AllowUnpaidExecutionFrom,
 };
 use xcm_executor::traits::ConvertOrigin;
@@ -52,7 +55,9 @@ frame_support::construct_runtime!(
 parameter_types! {
 	pub const BlockHashCount: u64 = 250;
 	pub BlockWeights: frame_system::limits::BlockWeights =
-		frame_system::limits::BlockWeights::simple_max(Weight::from_ref_time(1024));
+		frame_system::limits::BlockWeights::simple_max(
+			Weight::from_ref_time(1024).set_proof_size(u64::MAX),
+		);
 }
 
 impl frame_system::Config for Test {
@@ -85,17 +90,22 @@ impl frame_system::Config for Test {
 /// The benchmarks in this pallet should never need an asset transactor to begin with.
 pub struct NoAssetTransactor;
 impl xcm_executor::traits::TransactAsset for NoAssetTransactor {
-	fn deposit_asset(_: &MultiAsset, _: &MultiLocation) -> Result<(), XcmError> {
+	fn deposit_asset(_: &MultiAsset, _: &MultiLocation, _: &XcmContext) -> Result<(), XcmError> {
 		unreachable!();
 	}
 
-	fn withdraw_asset(_: &MultiAsset, _: &MultiLocation) -> Result<Assets, XcmError> {
+	fn withdraw_asset(
+		_: &MultiAsset,
+		_: &MultiLocation,
+		_: Option<&XcmContext>,
+	) -> Result<Assets, XcmError> {
 		unreachable!();
 	}
 }
 
 parameter_types! {
 	pub const MaxInstructions: u32 = 100;
+	pub const MaxAssetsIntoHolding: u32 = 64;
 }
 
 pub struct XcmConfig;
@@ -106,14 +116,23 @@ impl xcm_executor::Config for XcmConfig {
 	type OriginConverter = AlwaysSignedByDefault<RuntimeOrigin>;
 	type IsReserve = AllAssetLocationsPass;
 	type IsTeleporter = ();
-	type LocationInverter = xcm_builder::LocationInverter<Ancestry>;
+	type UniversalLocation = UniversalLocation;
 	type Barrier = AllowUnpaidExecutionFrom<Everything>;
 	type Weigher = xcm_builder::FixedWeightBounds<UnitWeightCost, RuntimeCall, MaxInstructions>;
 	type Trader = xcm_builder::FixedRateOfFungible<WeightPrice, ()>;
 	type ResponseHandler = DevNull;
 	type AssetTrap = TestAssetTrap;
+	type AssetLocker = TestAssetLocker;
+	type AssetExchanger = TestAssetExchanger;
 	type AssetClaims = TestAssetTrap;
 	type SubscriptionService = TestSubscriptionService;
+	type PalletInstancesInfo = AllPalletsWithSystem;
+	type MaxAssetsIntoHolding = MaxAssetsIntoHolding;
+	type FeeManager = ();
+	// No bridges yet...
+	type MessageExporter = ();
+	type UniversalAliases = TestUniversalAliases;
+	type CallDispatcher = RuntimeCall;
 }
 
 impl crate::Config for Test {
@@ -121,12 +140,15 @@ impl crate::Config for Test {
 	type AccountIdConverter = AccountIdConverter;
 	fn valid_destination() -> Result<MultiLocation, BenchmarkError> {
 		let valid_destination: MultiLocation =
-			Junction::AccountId32 { network: NetworkId::Any, id: [0u8; 32] }.into();
+			Junction::AccountId32 { network: None, id: [0u8; 32] }.into();
 
 		Ok(valid_destination)
 	}
-	fn worst_case_holding() -> MultiAssets {
-		crate::mock_worst_case_holding()
+	fn worst_case_holding(depositable_count: u32) -> MultiAssets {
+		crate::mock_worst_case_holding(
+			depositable_count,
+			<XcmConfig as xcm_executor::Config>::MaxAssetsIntoHolding::get(),
+		)
 	}
 }
 
@@ -136,6 +158,14 @@ impl generic::Config for Test {
 	fn worst_case_response() -> (u64, Response) {
 		let assets: MultiAssets = (Concrete(Here.into()), 100).into();
 		(0, Response::Assets(assets))
+	}
+
+	fn worst_case_asset_exchange() -> Result<(MultiAssets, MultiAssets), BenchmarkError> {
+		Ok(Default::default())
+	}
+
+	fn universal_alias() -> Result<Junction, BenchmarkError> {
+		Ok(GlobalConsensus(ByGenesis([0; 32])))
 	}
 
 	fn transact_origin() -> Result<MultiLocation, BenchmarkError> {
@@ -150,6 +180,11 @@ impl generic::Config for Test {
 		let assets: MultiAssets = (Concrete(Here.into()), 100).into();
 		let ticket = MultiLocation { parents: 0, interior: X1(GeneralIndex(0)) };
 		Ok((Default::default(), ticket, assets))
+	}
+
+	fn unlockable_asset() -> Result<(MultiLocation, MultiLocation, MultiAsset), BenchmarkError> {
+		let assets: MultiAsset = (Concrete(Here.into()), 100).into();
+		Ok((Default::default(), Default::default(), assets))
 	}
 }
 

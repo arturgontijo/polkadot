@@ -17,10 +17,13 @@
 //! XCM configurations for the Kusama runtime.
 
 use super::{
-	parachains_origin, AccountId, Balances, CouncilCollective, ParaId, Runtime, RuntimeCall,
-	RuntimeEvent, RuntimeOrigin, WeightToFee, XcmPallet,
+	parachains_origin, AccountId, AllPalletsWithSystem, Balances, CouncilCollective, ParaId,
+	Runtime, RuntimeCall, RuntimeEvent, RuntimeOrigin, WeightToFee, XcmPallet,
 };
-use frame_support::{match_types, parameter_types, traits::Everything};
+use frame_support::{
+	match_types, parameter_types,
+	traits::{Everything, Nothing},
+};
 use runtime_common::{xcm_sender, ToAuthor};
 use xcm::latest::prelude::*;
 use xcm_builder::{
@@ -28,7 +31,7 @@ use xcm_builder::{
 	AllowTopLevelPaidExecutionFrom, AllowUnpaidExecutionFrom, BackingToPlurality,
 	ChildParachainAsNative, ChildParachainConvertsVia, ChildSystemParachainAsSuperuser,
 	CurrencyAdapter as XcmCurrencyAdapter, FixedWeightBounds, IsChildSystemParachain, IsConcrete,
-	LocationInverter, SignedAccountId32AsNative, SignedToAccountId32, SovereignSignedViaLocation,
+	MintLocation, SignedAccountId32AsNative, SignedToAccountId32, SovereignSignedViaLocation,
 	TakeWeightCredit, UsingComponents, WeightInfoBounds,
 };
 
@@ -36,14 +39,15 @@ parameter_types! {
 	/// The location of the KSM token, from the context of this chain. Since this token is native to this
 	/// chain, we make it synonymous with it and thus it is the `Here` location, which means "equivalent to
 	/// the context".
-	pub const KsmLocation: MultiLocation = Here.into();
+	pub const TokenLocation: MultiLocation = Here.into_location();
 	/// The Kusama network ID. This is named.
-	pub const KusamaNetwork: NetworkId = NetworkId::Kusama;
-	/// Our XCM location ancestry - i.e. what, if anything, `Parent` means evaluated in our context. Since
-	/// Kusama is a top-level relay-chain, there is no ancestry.
-	pub const Ancestry: MultiLocation = Here.into();
+	pub const ThisNetwork: NetworkId = Kusama;
+	/// Our XCM location ancestry - i.e. our location within the Consensus Universe.
+	///
+	/// Since Kusama is a top-level relay-chain with its own consensus, it's just our network ID.
+	pub UniversalLocation: InteriorMultiLocation = ThisNetwork::get().into();
 	/// The check account, which holds any native assets that have been teleported out and not back in (yet).
-	pub CheckAccount: AccountId = XcmPallet::check_account();
+	pub CheckAccount: (AccountId, MintLocation) = (XcmPallet::check_account(), MintLocation::Local);
 }
 
 /// The canonical means of converting a `MultiLocation` into an `AccountId`, used when we want to determine
@@ -52,18 +56,18 @@ pub type SovereignAccountOf = (
 	// We can convert a child parachain using the standard `AccountId` conversion.
 	ChildParachainConvertsVia<ParaId, AccountId>,
 	// We can directly alias an `AccountId32` into a local account.
-	AccountId32Aliases<KusamaNetwork, AccountId>,
+	AccountId32Aliases<ThisNetwork, AccountId>,
 );
 
 /// Our asset transactor. This is what allows us to interest with the runtime facilities from the point of
 /// view of XCM-only concepts like `MultiLocation` and `MultiAsset`.
 ///
-/// Ours is only aware of the Balances pallet, which is mapped to `KsmLocation`.
+/// Ours is only aware of the Balances pallet, which is mapped to `TokenLocation`.
 pub type LocalAssetTransactor = XcmCurrencyAdapter<
 	// Use this currency:
 	Balances,
 	// Use this currency when it is a fungible asset matching the given location or name:
-	IsConcrete<KsmLocation>,
+	IsConcrete<TokenLocation>,
 	// We can convert the MultiLocations with our converter above:
 	SovereignAccountOf,
 	// Our chain's account ID type (we can't get away without mentioning it explicitly):
@@ -72,14 +76,14 @@ pub type LocalAssetTransactor = XcmCurrencyAdapter<
 	CheckAccount,
 >;
 
-/// The means that we convert an the XCM message origin location into a local dispatch origin.
+/// The means that we convert the XCM message origin location into a local dispatch origin.
 type LocalOriginConverter = (
 	// A `Signed` origin of the sovereign account that the original location controls.
 	SovereignSignedViaLocation<SovereignAccountOf, RuntimeOrigin>,
 	// A child parachain, natively expressed, has the `Parachain` origin.
 	ChildParachainAsNative<parachains_origin::Origin, RuntimeOrigin>,
 	// The AccountId32 location type can be expressed natively as a `Signed` origin.
-	SignedAccountId32AsNative<KusamaNetwork, RuntimeOrigin>,
+	SignedAccountId32AsNative<ThisNetwork, RuntimeOrigin>,
 	// A system child parachain, expressed as a Superuser, converts to the `Root` origin.
 	ChildSystemParachainAsSuperuser<ParaId, RuntimeOrigin>,
 );
@@ -96,18 +100,19 @@ parameter_types! {
 /// individual routers.
 pub type XcmRouter = (
 	// Only one router so far - use DMP to communicate with child parachains.
-	xcm_sender::ChildParachainRouter<Runtime, XcmPallet>,
+	xcm_sender::ChildParachainRouter<Runtime, XcmPallet, ()>,
 );
 
 parameter_types! {
-	pub const Kusama: MultiAssetFilter = Wild(AllOf { fun: WildFungible, id: Concrete(KsmLocation::get()) });
-	pub const Statemine: MultiLocation = Parachain(1000).into();
-	pub const Encointer: MultiLocation = Parachain(1001).into();
-	pub const KusamaForStatemine: (MultiAssetFilter, MultiLocation) = (Kusama::get(), Statemine::get());
-	pub const KusamaForEncointer: (MultiAssetFilter, MultiLocation) = (Kusama::get(), Encointer::get());
+	pub const Ksm: MultiAssetFilter = Wild(AllOf { fun: WildFungible, id: Concrete(TokenLocation::get()) });
+	pub const Statemine: MultiLocation = Parachain(1000).into_location();
+	pub const Encointer: MultiLocation = Parachain(1001).into_location();
+	pub const KsmForStatemine: (MultiAssetFilter, MultiLocation) = (Ksm::get(), Statemine::get());
+	pub const KsmForEncointer: (MultiAssetFilter, MultiLocation) = (Ksm::get(), Encointer::get());
+	pub const MaxAssetsIntoHolding: u32 = 64;
 }
 pub type TrustedTeleporters =
-	(xcm_builder::Case<KusamaForStatemine>, xcm_builder::Case<KusamaForEncointer>);
+	(xcm_builder::Case<KsmForStatemine>, xcm_builder::Case<KsmForEncointer>);
 
 match_types! {
 	pub type OnlyParachains: impl Contains<MultiLocation> = {
@@ -137,7 +142,7 @@ impl xcm_executor::Config for XcmConfig {
 	type OriginConverter = LocalOriginConverter;
 	type IsReserve = ();
 	type IsTeleporter = TrustedTeleporters;
-	type LocationInverter = LocationInverter<Ancestry>;
+	type UniversalLocation = UniversalLocation;
 	type Barrier = Barrier;
 	type Weigher = WeightInfoBounds<
 		crate::weights::xcm::KusamaXcmWeight<RuntimeCall>,
@@ -145,11 +150,21 @@ impl xcm_executor::Config for XcmConfig {
 		MaxInstructions,
 	>;
 	// The weight trader piggybacks on the existing transaction-fee conversion logic.
-	type Trader = UsingComponents<WeightToFee, KsmLocation, AccountId, Balances, ToAuthor<Runtime>>;
+	type Trader =
+		UsingComponents<WeightToFee, TokenLocation, AccountId, Balances, ToAuthor<Runtime>>;
 	type ResponseHandler = XcmPallet;
 	type AssetTrap = XcmPallet;
+	type AssetLocker = ();
+	type AssetExchanger = ();
 	type AssetClaims = XcmPallet;
 	type SubscriptionService = XcmPallet;
+	type PalletInstancesInfo = AllPalletsWithSystem;
+	type MaxAssetsIntoHolding = MaxAssetsIntoHolding;
+	type FeeManager = ();
+	// No bridges yet...
+	type MessageExporter = ();
+	type UniversalAliases = Nothing;
+	type CallDispatcher = RuntimeCall;
 }
 
 parameter_types! {
@@ -170,8 +185,9 @@ pub type LocalOriginToLocation = (
 	// `Unit` body.
 	CouncilToPlurality,
 	// And a usual Signed origin to be used in XCM as a corresponding AccountId32
-	SignedToAccountId32<RuntimeOrigin, AccountId, KusamaNetwork>,
+	SignedToAccountId32<RuntimeOrigin, AccountId, ThisNetwork>,
 );
+
 impl pallet_xcm::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	// We only allow the council to send messages. This is basically safe to enable for everyone
@@ -190,9 +206,14 @@ impl pallet_xcm::Config for Runtime {
 	// transfer.
 	type XcmReserveTransferFilter = Everything;
 	type Weigher = FixedWeightBounds<BaseXcmWeight, RuntimeCall, MaxInstructions>;
-	type LocationInverter = LocationInverter<Ancestry>;
+	type UniversalLocation = UniversalLocation;
 	type RuntimeOrigin = RuntimeOrigin;
 	type RuntimeCall = RuntimeCall;
 	const VERSION_DISCOVERY_QUEUE_SIZE: u32 = 100;
 	type AdvertisedXcmVersion = pallet_xcm::CurrentXcmVersion;
+	type Currency = Balances;
+	type CurrencyMatcher = ();
+	type TrustedLockers = ();
+	type SovereignAccountOf = SovereignAccountOf;
+	type MaxLockers = frame_support::traits::ConstU32<8>;
 }

@@ -17,10 +17,13 @@
 //! XCM configuration for Rococo.
 
 use super::{
-	parachains_origin, AccountId, Balances, CouncilCollective, ParaId, Runtime, RuntimeCall,
-	RuntimeEvent, RuntimeOrigin, WeightToFee, XcmPallet,
+	parachains_origin, AccountId, AllPalletsWithSystem, Balances, CouncilCollective, ParaId,
+	Runtime, RuntimeCall, RuntimeEvent, RuntimeOrigin, WeightToFee, XcmPallet,
 };
-use frame_support::{match_types, parameter_types, traits::Everything};
+use frame_support::{
+	match_types, parameter_types,
+	traits::{Everything, Nothing},
+};
 use runtime_common::{xcm_sender, ToAuthor};
 use xcm::latest::prelude::*;
 use xcm_builder::{
@@ -28,33 +31,20 @@ use xcm_builder::{
 	AllowTopLevelPaidExecutionFrom, AllowUnpaidExecutionFrom, BackingToPlurality,
 	ChildParachainAsNative, ChildParachainConvertsVia, ChildSystemParachainAsSuperuser,
 	CurrencyAdapter as XcmCurrencyAdapter, FixedWeightBounds, IsChildSystemParachain, IsConcrete,
-	LocationInverter, SignedAccountId32AsNative, SignedToAccountId32, SovereignSignedViaLocation,
+	MintLocation, SignedAccountId32AsNative, SignedToAccountId32, SovereignSignedViaLocation,
 	TakeWeightCredit, UsingComponents, WeightInfoBounds,
 };
+use xcm_executor::XcmExecutor;
 
 parameter_types! {
-	/// The location of the ROC token, from the context of this chain. Since this token is native to this
-	/// chain, we make it synonymous with it and thus it is the `Here` location, which means "equivalent to
-	/// the context".
-	pub const RocLocation: MultiLocation = Here.into();
-	/// The Rococo network ID. This is named.
-	pub RococoNetwork: NetworkId =
-		NetworkId::Named(b"Rococo".to_vec().try_into().expect("shorter than length limit; qed"));
-	/// Our XCM location ancestry - i.e. what, if anything, `Parent` means evaluated in our context. Since
-	/// Rococo is a top-level relay-chain, there is no ancestry.
-	pub const Ancestry: MultiLocation = Here.into();
-	/// The check account, which holds any native assets that have been teleported out and not back in (yet).
-	pub CheckAccount: AccountId = XcmPallet::check_account();
+	pub const TokenLocation: MultiLocation = Here.into_location();
+	pub const ThisNetwork: NetworkId = NetworkId::Rococo;
+	pub UniversalLocation: InteriorMultiLocation = ThisNetwork::get().into();
+	pub CheckAccount: (AccountId, MintLocation) = (XcmPallet::check_account(), MintLocation::Local);
 }
 
-/// The canonical means of converting a `MultiLocation` into an `AccountId`, used when we want to determine
-/// the sovereign account controlled by a location.
-pub type SovereignAccountOf = (
-	// We can convert a child parachain using the standard `AccountId` conversion.
-	ChildParachainConvertsVia<ParaId, AccountId>,
-	// We can directly alias an `AccountId32` into a local account.
-	AccountId32Aliases<RococoNetwork, AccountId>,
-);
+pub type LocationConverter =
+	(ChildParachainConvertsVia<ParaId, AccountId>, AccountId32Aliases<ThisNetwork, AccountId>);
 
 /// Our asset transactor. This is what allows us to interest with the runtime facilities from the point of
 /// view of XCM-only concepts like `MultiLocation` and `MultiAsset`.
@@ -64,9 +54,9 @@ pub type LocalAssetTransactor = XcmCurrencyAdapter<
 	// Use this currency:
 	Balances,
 	// Use this currency when it is a fungible asset matching the given location or name:
-	IsConcrete<RocLocation>,
+	IsConcrete<TokenLocation>,
 	// We can convert the MultiLocations with our converter above:
-	SovereignAccountOf,
+	LocationConverter,
 	// Our chain's account ID type (we can't get away without mentioning it explicitly):
 	AccountId,
 	// We track our teleports in/out to keep total issuance correct.
@@ -76,11 +66,11 @@ pub type LocalAssetTransactor = XcmCurrencyAdapter<
 /// The means that we convert an the XCM message origin location into a local dispatch origin.
 type LocalOriginConverter = (
 	// A `Signed` origin of the sovereign account that the original location controls.
-	SovereignSignedViaLocation<SovereignAccountOf, RuntimeOrigin>,
+	SovereignSignedViaLocation<LocationConverter, RuntimeOrigin>,
 	// A child parachain, natively expressed, has the `Parachain` origin.
 	ChildParachainAsNative<parachains_origin::Origin, RuntimeOrigin>,
 	// The AccountId32 location type can be expressed natively as a `Signed` origin.
-	SignedAccountId32AsNative<RococoNetwork, RuntimeOrigin>,
+	SignedAccountId32AsNative<ThisNetwork, RuntimeOrigin>,
 	// A system child parachain, expressed as a Superuser, converts to the `Root` origin.
 	ChildSystemParachainAsSuperuser<ParaId, RuntimeOrigin>,
 );
@@ -88,39 +78,38 @@ type LocalOriginConverter = (
 parameter_types! {
 	/// The amount of weight an XCM operation takes. This is a safe overestimate.
 	pub const BaseXcmWeight: u64 = 1_000_000_000;
-	/// Maximum number of instructions in a single XCM fragment. A sanity check against weight
-	/// calculations getting too crazy.
-	pub const MaxInstructions: u32 = 100;
 }
 /// The XCM router. When we want to send an XCM message, we use this type. It amalgamates all of our
 /// individual routers.
 pub type XcmRouter = (
 	// Only one router so far - use DMP to communicate with child parachains.
-	xcm_sender::ChildParachainRouter<Runtime, XcmPallet>,
+	xcm_sender::ChildParachainRouter<Runtime, XcmPallet, ()>,
 );
 
 parameter_types! {
-	pub const Rococo: MultiAssetFilter = Wild(AllOf { fun: WildFungible, id: Concrete(RocLocation::get()) });
-	pub const Statemine: MultiLocation = Parachain(1000).into();
-	pub const Contracts: MultiLocation = Parachain(1002).into();
-	pub const Encointer: MultiLocation = Parachain(1003).into();
-	pub const Tick: MultiLocation = Parachain(100).into();
-	pub const Trick: MultiLocation = Parachain(110).into();
-	pub const Track: MultiLocation = Parachain(120).into();
-	pub const RococoForTick: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Tick::get());
-	pub const RococoForTrick: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Trick::get());
-	pub const RococoForTrack: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Track::get());
-	pub const RococoForStatemine: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Statemine::get());
-	pub const RococoForContracts: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Contracts::get());
-	pub const RococoForEncointer: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Encointer::get());
+	pub const Roc: MultiAssetFilter = Wild(AllOf { fun: WildFungible, id: Concrete(TokenLocation::get()) });
+	pub const Statemine: MultiLocation = Parachain(1000).into_location();
+	pub const Contracts: MultiLocation = Parachain(1002).into_location();
+	pub const Encointer: MultiLocation = Parachain(1003).into_location();
+	pub const Tick: MultiLocation = Parachain(100).into_location();
+	pub const Trick: MultiLocation = Parachain(110).into_location();
+	pub const Track: MultiLocation = Parachain(120).into_location();
+	pub const RocForTick: (MultiAssetFilter, MultiLocation) = (Roc::get(), Tick::get());
+	pub const RocForTrick: (MultiAssetFilter, MultiLocation) = (Roc::get(), Trick::get());
+	pub const RocForTrack: (MultiAssetFilter, MultiLocation) = (Roc::get(), Track::get());
+	pub const RocForStatemine: (MultiAssetFilter, MultiLocation) = (Roc::get(), Statemine::get());
+	pub const RocForContracts: (MultiAssetFilter, MultiLocation) = (Roc::get(), Contracts::get());
+	pub const RocForEncointer: (MultiAssetFilter, MultiLocation) = (Roc::get(), Encointer::get());
+	pub const MaxInstructions: u32 = 100;
+	pub const MaxAssetsIntoHolding: u32 = 64;
 }
 pub type TrustedTeleporters = (
-	xcm_builder::Case<RococoForTick>,
-	xcm_builder::Case<RococoForTrick>,
-	xcm_builder::Case<RococoForTrack>,
-	xcm_builder::Case<RococoForStatemine>,
-	xcm_builder::Case<RococoForContracts>,
-	xcm_builder::Case<RococoForEncointer>,
+	xcm_builder::Case<RocForTick>,
+	xcm_builder::Case<RocForTrick>,
+	xcm_builder::Case<RocForTrack>,
+	xcm_builder::Case<RocForStatemine>,
+	xcm_builder::Case<RocForContracts>,
+	xcm_builder::Case<RocForEncointer>,
 );
 
 match_types! {
@@ -151,19 +140,27 @@ impl xcm_executor::Config for XcmConfig {
 	type OriginConverter = LocalOriginConverter;
 	type IsReserve = ();
 	type IsTeleporter = TrustedTeleporters;
-	type LocationInverter = LocationInverter<Ancestry>;
+	type UniversalLocation = UniversalLocation;
 	type Barrier = Barrier;
 	type Weigher = WeightInfoBounds<
 		crate::weights::xcm::RococoXcmWeight<RuntimeCall>,
 		RuntimeCall,
 		MaxInstructions,
 	>;
-	// The weight trader piggybacks on the existing transaction-fee conversion logic.
-	type Trader = UsingComponents<WeightToFee, RocLocation, AccountId, Balances, ToAuthor<Runtime>>;
+	type Trader =
+		UsingComponents<WeightToFee, TokenLocation, AccountId, Balances, ToAuthor<Runtime>>;
 	type ResponseHandler = XcmPallet;
 	type AssetTrap = XcmPallet;
+	type AssetLocker = ();
+	type AssetExchanger = ();
 	type AssetClaims = XcmPallet;
 	type SubscriptionService = XcmPallet;
+	type PalletInstancesInfo = AllPalletsWithSystem;
+	type MaxAssetsIntoHolding = MaxAssetsIntoHolding;
+	type FeeManager = ();
+	type MessageExporter = ();
+	type UniversalAliases = Nothing;
+	type CallDispatcher = RuntimeCall;
 }
 
 parameter_types! {
@@ -188,7 +185,7 @@ pub type LocalOriginToLocation = (
 	// `Unit` body.
 	CouncilToPlurality,
 	// And a usual Signed origin to be used in XCM as a corresponding AccountId32
-	SignedToAccountId32<RuntimeOrigin, AccountId, RococoNetwork>,
+	SignedToAccountId32<RuntimeOrigin, AccountId, ThisNetwork>,
 );
 impl pallet_xcm::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
@@ -197,16 +194,20 @@ impl pallet_xcm::Config for Runtime {
 	// Anyone can execute XCM messages locally.
 	type ExecuteXcmOrigin = xcm_builder::EnsureXcmOrigin<RuntimeOrigin, LocalOriginToLocation>;
 	type XcmExecuteFilter = Everything;
-	type XcmExecutor = xcm_executor::XcmExecutor<XcmConfig>;
-	// Anyone is able to use teleportation regardless of who they are and what they want to teleport.
+	type XcmExecutor = XcmExecutor<XcmConfig>;
 	type XcmTeleportFilter = Everything;
 	// Anyone is able to use reserve transfers regardless of who they are and what they want to
 	// transfer.
 	type XcmReserveTransferFilter = Everything;
 	type Weigher = FixedWeightBounds<BaseXcmWeight, RuntimeCall, MaxInstructions>;
-	type LocationInverter = LocationInverter<Ancestry>;
+	type UniversalLocation = UniversalLocation;
 	type RuntimeOrigin = RuntimeOrigin;
 	type RuntimeCall = RuntimeCall;
 	const VERSION_DISCOVERY_QUEUE_SIZE: u32 = 100;
 	type AdvertisedXcmVersion = pallet_xcm::CurrentXcmVersion;
+	type Currency = Balances;
+	type CurrencyMatcher = IsConcrete<TokenLocation>;
+	type TrustedLockers = ();
+	type SovereignAccountOf = LocationConverter;
+	type MaxLockers = frame_support::traits::ConstU32<8>;
 }

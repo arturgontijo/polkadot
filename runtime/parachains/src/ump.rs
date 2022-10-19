@@ -134,7 +134,7 @@ impl<XcmExecutor: xcm::latest::ExecuteXcm<C::RuntimeCall>, C: Config> UmpSink
 			Ok((Ok(xcm_message), weight_used)) => {
 				let xcm_junction = Junction::Parachain(origin.into());
 				let outcome =
-					XcmExecutor::execute_xcm(xcm_junction, xcm_message, max_weight.ref_time());
+					XcmExecutor::execute_xcm(xcm_junction, xcm_message, id, max_weight.ref_time());
 				match outcome {
 					Outcome::Error(XcmError::WeightLimitReached(required)) =>
 						Err((id, Weight::from_ref_time(required))),
